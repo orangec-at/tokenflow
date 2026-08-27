@@ -127,9 +127,16 @@ function Thread({ children }) {
 }
 ```
 
-Growth is detected with a `ResizeObserver` on the content, not a render count,
-so late-loading images and fonts that change height after the text committed are
-handled too.
+Growth is detected with a `ResizeObserver` on the container and on every direct
+child, not a render count, so late-loading images and fonts that change height
+after the text committed are handled too. A `MutationObserver` keeps the observed
+set in step as messages are added and removed — watching only the first child
+misses a chat that mounts empty and a chat that grows by adding siblings.
+
+A smooth `scrollToBottom()` passes through positions that are not the bottom
+yet, so those frames are ignored while it settles. The reader's own input
+(`wheel`, `touchstart`, `pointerdown`, `keydown`) ends that guard immediately,
+because someone who scrolls away mid-animation has to be able to unpin.
 
 Pinning is decided by **position**, not by tracking which scrolls were ours.
 A flag that consumes "the next scroll event" breaks the first time a
@@ -230,7 +237,7 @@ message subtree is cheap. Plain `useState` is fine and you should keep it.
 
 ```bash
 pnpm install
-pnpm test        # 50 tests
+pnpm test        # 56 tests
 pnpm bench       # render-count comparison
 pnpm typecheck
 pnpm build

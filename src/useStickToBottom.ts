@@ -25,6 +25,12 @@ export type UseStickToBottom<T extends HTMLElement> = {
   scrollToBottom: (behavior?: ScrollBehavior) => void
 }
 
+/**
+ * Events that mean the reader is driving the scroll themselves. Any of them
+ * ends the settling guard below, whatever the animation is doing.
+ */
+const INPUT_EVENTS = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const
+
 function atBottom(el: HTMLElement, threshold: number): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
 }
@@ -38,9 +44,10 @@ function atBottom(el: HTMLElement, threshold: number): boolean {
  * This hook watches the container and stops following as soon as the reader
  * scrolls away, then resumes when they come back to the bottom.
  *
- * Growth is detected with a `ResizeObserver` on the content rather than on a
- * render count, so it also handles late-loading images and fonts that change
- * height after the text is already committed.
+ * Growth is detected with a `ResizeObserver` on the container and on every
+ * direct child rather than on a render count, so it also handles late-loading
+ * images and fonts that change height after the text is already committed. A
+ * `MutationObserver` keeps that set in step as messages are added and removed.
  *
  * ```tsx
  * const { ref, isPinned, scrollToBottom } = useStickToBottom<HTMLDivElement>()
@@ -57,10 +64,16 @@ export function useStickToBottom<T extends HTMLElement>(
   const pinnedRef = useRef(initialPinned)
   const [isPinned, setIsPinned] = useState(initialPinned)
   const observerRef = useRef<ResizeObserver | null>(null)
+  const mutationRef = useRef<MutationObserver | null>(null)
   // Set only while a *smooth* scroll is animating. Instant scrolls need no
   // guard: the position check below is self-correcting, because a jump to the
   // bottom lands at the bottom. A smooth scroll passes through positions that
   // are not the bottom yet, which would otherwise read as "reader scrolled up".
+  //
+  // Reaching the bottom is not the only way out of this state. A reader who
+  // scrolls away mid-animation has to be able to unpin, so their own input
+  // clears the flag too — otherwise the guard swallows the one event that
+  // matters and the next growth drags them back down.
   const settlingRef = useRef(false)
 
   const setPinned = useCallback((next: boolean) => {
@@ -108,36 +121,77 @@ export function useStickToBottom<T extends HTMLElement>(
     onScrollRef.current()
   }).current
 
+  // The reader took over. A smooth scroll that is still animating no longer
+  // owns the scroll position, so stop treating its frames as unreadable.
+  const stableInputHandler = useRef(() => {
+    settlingRef.current = false
+  }).current
+
   const ref = useCallback(
     (node: T | null) => {
       const previous = elRef.current
       if (previous) {
         previous.removeEventListener('scroll', stableScrollHandler)
+        for (const type of INPUT_EVENTS) {
+          previous.removeEventListener(type, stableInputHandler)
+        }
       }
       observerRef.current?.disconnect()
       observerRef.current = null
+      mutationRef.current?.disconnect()
+      mutationRef.current = null
+      settlingRef.current = false
       elRef.current = node
       if (!node) return
 
       node.addEventListener('scroll', stableScrollHandler, { passive: true })
+      for (const type of INPUT_EVENTS) {
+        node.addEventListener(type, stableInputHandler, { passive: true })
+      }
 
       if (typeof ResizeObserver !== 'undefined') {
         const observer = new ResizeObserver(() => {
           if (!pinnedRef.current) return
           node.scrollTop = node.scrollHeight
         })
-        // Observing the container catches its own resize; observing the first
-        // child catches content growth, which is the case that matters here.
+        // Observing the container catches its own resize. Content grows inside
+        // it, where the container's border box never moves, so every direct
+        // child is observed too. Watching only the first child was the earlier
+        // shape and it missed two ordinary cases: a chat that mounts with no
+        // messages has no first child to find, and a chat that renders one
+        // element per message grows by adding siblings the first child knows
+        // nothing about.
         observer.observe(node)
-        if (node.firstElementChild) observer.observe(node.firstElementChild)
+        for (const child of Array.from(node.children)) observer.observe(child)
         observerRef.current = observer
+
+        // Children arrive and leave after mount, so the observed set has to
+        // follow them. Observing a fresh element fires the callback with its
+        // initial size, which is what re-pins the view when a message lands.
+        if (typeof MutationObserver !== 'undefined') {
+          const mutation = new MutationObserver((records) => {
+            for (const record of records) {
+              for (const added of Array.from(record.addedNodes)) {
+                if (added instanceof Element) observer.observe(added)
+              }
+              for (const removed of Array.from(record.removedNodes)) {
+                if (removed instanceof Element) observer.unobserve(removed)
+              }
+            }
+          })
+          // ponytail: direct children only. A container that grows by mutating
+          // a deep descendant instead of its own child list would need
+          // `subtree: true`, at the cost of a record per keystroke.
+          mutation.observe(node, { childList: true })
+          mutationRef.current = mutation
+        }
       }
 
       if (pinnedRef.current) {
         node.scrollTop = node.scrollHeight
       }
     },
-    [stableScrollHandler]
+    [stableInputHandler, stableScrollHandler]
   )
 
   return { ref, isPinned, scrollToBottom }
