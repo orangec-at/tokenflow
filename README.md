@@ -135,10 +135,13 @@ after the text committed are handled too. A `MutationObserver` keeps the observe
 set in step as messages are added and removed — watching only the first child
 misses a chat that mounts empty and a chat that grows by adding siblings.
 
-A smooth `scrollToBottom()` passes through positions that are not the bottom
-yet, so those frames are ignored while it settles. The reader's own input
-(`wheel`, `touchstart`, `pointerdown`, `keydown`) ends that guard immediately,
-because someone who scrolls away mid-animation has to be able to unpin.
+Landing away from the bottom does not mean the reader left. Three things put
+the view there, and each scroll event is read against the previous position to
+tell them apart. A smooth `scrollToBottom()` emits frames on the way down, and
+those move downward while a reader leaving moves upward, so direction alone
+identifies them. Content growing moves the bottom away while the reader sits
+still, and a changed `scrollHeight` identifies that. What is left is the
+reader, and only that unpins.
 
 Pinning is decided by **position**, not by tracking which scrolls were ours.
 A flag that consumes "the next scroll event" breaks the first time a

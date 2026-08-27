@@ -25,12 +25,6 @@ export type UseStickToBottom<T extends HTMLElement> = {
   scrollToBottom: (behavior?: ScrollBehavior) => void
 }
 
-/**
- * Events that mean the reader is driving the scroll themselves. Any of them
- * ends the settling guard below, whatever the animation is doing.
- */
-const INPUT_EVENTS = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const
-
 function atBottom(el: HTMLElement, threshold: number): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
 }
@@ -65,16 +59,10 @@ export function useStickToBottom<T extends HTMLElement>(
   const [isPinned, setIsPinned] = useState(initialPinned)
   const observerRef = useRef<ResizeObserver | null>(null)
   const mutationRef = useRef<MutationObserver | null>(null)
-  // Set only while a *smooth* scroll is animating. Instant scrolls need no
-  // guard: the position check below is self-correcting, because a jump to the
-  // bottom lands at the bottom. A smooth scroll passes through positions that
-  // are not the bottom yet, which would otherwise read as "reader scrolled up".
-  //
-  // Reaching the bottom is not the only way out of this state. A reader who
-  // scrolls away mid-animation has to be able to unpin, so their own input
-  // clears the flag too — otherwise the guard swallows the one event that
-  // matters and the next growth drags them back down.
-  const settlingRef = useRef(false)
+  // The previous scroll position, which is what makes an event readable. See
+  // the handler below: position alone cannot say who moved the view.
+  const lastTopRef = useRef(0)
+  const lastHeightRef = useRef(0)
 
   const setPinned = useCallback((next: boolean) => {
     if (pinnedRef.current === next) return
@@ -86,7 +74,6 @@ export function useStickToBottom<T extends HTMLElement>(
     (b: ScrollBehavior = behavior) => {
       const el = elRef.current
       if (!el) return
-      settlingRef.current = b === 'smooth'
       el.scrollTo({ top: el.scrollHeight, behavior: b })
       setPinned(true)
     },
@@ -107,24 +94,36 @@ export function useStickToBottom<T extends HTMLElement>(
   onScrollRef.current = () => {
     const el = elRef.current
     if (!el) return
-    const bottom = atBottom(el, threshold)
-    if (settlingRef.current) {
-      // Mid-animation frames are not the reader's intent. Wait for the scroll
-      // to land before judging position again.
-      if (!bottom) return
-      settlingRef.current = false
+
+    const prevTop = lastTopRef.current
+    const prevHeight = lastHeightRef.current
+    lastTopRef.current = el.scrollTop
+    lastHeightRef.current = el.scrollHeight
+
+    if (atBottom(el, threshold)) {
+      setPinned(true)
+      return
     }
-    setPinned(bottom)
+
+    // Landing away from the bottom is not the same as the reader leaving, and
+    // three different things produce it. Comparing against the previous
+    // position tells them apart; the position on its own cannot.
+    //
+    // A smooth scrollToBottom emits frames on the way down. Those move
+    // downward, and the reader leaving moves upward, so the direction alone
+    // identifies them. Nothing has to be flagged or unflagged.
+    if (el.scrollTop > prevTop) return
+
+    // Content growing pushes the bottom away while the reader sits still. A
+    // changed scrollHeight means the view moved under them, not that they left
+    // — and unpinning here would also stop the follow for the rest of the run.
+    if (el.scrollHeight !== prevHeight) return
+
+    setPinned(false)
   }
 
   const stableScrollHandler = useRef(() => {
     onScrollRef.current()
-  }).current
-
-  // The reader took over. A smooth scroll that is still animating no longer
-  // owns the scroll position, so stop treating its frames as unreadable.
-  const stableInputHandler = useRef(() => {
-    settlingRef.current = false
   }).current
 
   const ref = useCallback(
@@ -132,22 +131,19 @@ export function useStickToBottom<T extends HTMLElement>(
       const previous = elRef.current
       if (previous) {
         previous.removeEventListener('scroll', stableScrollHandler)
-        for (const type of INPUT_EVENTS) {
-          previous.removeEventListener(type, stableInputHandler)
-        }
       }
       observerRef.current?.disconnect()
       observerRef.current = null
       mutationRef.current?.disconnect()
       mutationRef.current = null
-      settlingRef.current = false
       elRef.current = node
       if (!node) return
 
+      // Seed the comparison so the reader's first scroll is readable.
+      lastTopRef.current = node.scrollTop
+      lastHeightRef.current = node.scrollHeight
+
       node.addEventListener('scroll', stableScrollHandler, { passive: true })
-      for (const type of INPUT_EVENTS) {
-        node.addEventListener(type, stableInputHandler, { passive: true })
-      }
 
       if (typeof ResizeObserver !== 'undefined') {
         const observer = new ResizeObserver(() => {
@@ -189,9 +185,10 @@ export function useStickToBottom<T extends HTMLElement>(
 
       if (pinnedRef.current) {
         node.scrollTop = node.scrollHeight
+        lastTopRef.current = node.scrollTop
       }
     },
-    [stableInputHandler, stableScrollHandler]
+    [stableScrollHandler]
   )
 
   return { ref, isPinned, scrollToBottom }

@@ -37,6 +37,16 @@ function scrollBox(el: HTMLElement, { scrollHeight = 1000, clientHeight = 400 } 
       top = next
       el.dispatchEvent(new Event('scroll'))
     },
+    /**
+     * jsdom reports every metric as 0 until this helper installs them, and it
+     * can only run after render. A browser has real metrics when the ref
+     * attaches and the hook's own initial scroll lands at the bottom, so
+     * replay that before a test asks what the reader's scroll means.
+     */
+    settleAtBottom() {
+      top = scrollHeight - clientHeight
+      el.dispatchEvent(new Event('scroll'))
+    },
   }
 }
 
@@ -72,6 +82,7 @@ describe('useStickToBottom under StrictMode', () => {
 
     const el = view.getByTestId('scroller')
     const box = scrollBox(el)
+    act(() => box.settleAtBottom())
 
     act(() => box.scrollTo(0))
 
@@ -88,6 +99,7 @@ describe('useStickToBottom under StrictMode', () => {
 
     const el = view.getByTestId('scroller')
     const box = scrollBox(el)
+    act(() => box.settleAtBottom())
 
     act(() => box.scrollTo(0))
     expect(pinned).toBe(false)

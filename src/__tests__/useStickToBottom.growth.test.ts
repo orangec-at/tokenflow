@@ -38,7 +38,7 @@ function resize(target: Element) {
   for (const ro of ros) if (ro.targets.has(target)) ro.cb()
 }
 
-function scrollBox({ scrollHeight = 1000, clientHeight = 400 } = {}) {
+function scrollBox({ scrollHeight = 1000, clientHeight = 400, smoothIsInstant = true } = {}) {
   const el = document.createElement('div')
   document.body.appendChild(el)
   let top = 0
@@ -59,6 +59,9 @@ function scrollBox({ scrollHeight = 1000, clientHeight = 400 } = {}) {
     configurable: true,
   })
   el.scrollTo = ((o: ScrollToOptions) => {
+    // A real smooth scroll does not land immediately; it emits frames on the
+    // way. Tests that care about those frames drive them by hand.
+    if (o.behavior === 'smooth' && !smoothIsInstant) return
     top = o.top ?? top
   }) as HTMLElement['scrollTo']
   return {
@@ -68,6 +71,11 @@ function scrollBox({ scrollHeight = 1000, clientHeight = 400 } = {}) {
     },
     scrollTo(next: number) {
       top = next
+      el.dispatchEvent(new Event('scroll'))
+    },
+    /** Content grew under a reader who never touched the scrollbar. */
+    growThenScroll(by: number) {
+      height += by
       el.dispatchEvent(new Event('scroll'))
     },
     get scrollTop() {
@@ -137,60 +145,74 @@ describe('content growth that is not the first child at mount', () => {
   })
 })
 
-describe('reader input during a smooth scroll', () => {
-  it('unpins when the reader scrolls up mid-animation', () => {
-    // Regression: `settlingRef` was cleared only by reaching the bottom, so a
-    // reader who scrolled away during a smooth scrollToBottom() was never
-    // unpinned — and the next growth yanked them back down. That is the exact
-    // behaviour this hook exists to prevent.
+describe('what "not at the bottom" actually means', () => {
+  /**
+   * A scroll event that lands away from the bottom has three possible causes,
+   * and only one of them is the reader. Position alone cannot tell them apart.
+   */
+
+  it('does not unpin when growth pushed the bottom away', () => {
+    // Regression: judging on position alone read a taller scrollHeight as a
+    // scroll away from the bottom. The reader never moved; the content grew
+    // under them. Unpinning here also disabled the ResizeObserver follow, so
+    // the view stopped following for the rest of the session.
     const box = scrollBox()
     const child = document.createElement('div')
     box.el.appendChild(child)
     const { result } = renderHook(() => useStickToBottom<HTMLDivElement>())
     act(() => result.current.ref(box.el as HTMLDivElement))
-
-    act(() => result.current.scrollToBottom('smooth'))
     expect(result.current.isPinned).toBe(true)
 
-    act(() => {
-      box.el.dispatchEvent(new Event('wheel'))
-      box.scrollTo(0)
-    })
+    // scrollTop holds at 1000 while scrollHeight goes to 1500. The distance to
+    // the bottom is now 100px, well past the 24px threshold.
+    act(() => box.growThenScroll(500))
 
-    expect(result.current.isPinned).toBe(false)
+    expect(result.current.isPinned).toBe(true)
   })
 
-  it('leaves the reader where they scrolled to', () => {
-    const box = scrollBox()
-    const child = document.createElement('div')
-    box.el.appendChild(child)
-    const { result } = renderHook(() => useStickToBottom<HTMLDivElement>())
-    act(() => result.current.ref(box.el as HTMLDivElement))
-
-    act(() => result.current.scrollToBottom('smooth'))
-    act(() => {
-      box.el.dispatchEvent(new Event('touchstart'))
-      box.scrollTo(0)
-    })
-
-    box.grow(500)
-    act(() => resize(child))
-
-    expect(box.scrollTop).toBe(0)
-  })
-
-  it('still re-pins when the smooth scroll lands untouched', () => {
-    // The settling guard must survive: mid-animation frames that the reader did
-    // not cause should not unpin.
-    const box = scrollBox()
+  it('does not unpin on a mid-animation frame of a smooth scroll', () => {
+    // Those frames move downward. The reader moving away moves upward.
+    const box = scrollBox({ smoothIsInstant: false })
     const { result } = renderHook(() => useStickToBottom<HTMLDivElement>())
     act(() => result.current.ref(box.el as HTMLDivElement))
     act(() => box.scrollTo(0))
     expect(result.current.isPinned).toBe(false)
 
     act(() => result.current.scrollToBottom('smooth'))
-    // An intermediate frame of the animation, not the reader.
     act(() => box.scrollTo(300))
+    act(() => box.scrollTo(700))
+
     expect(result.current.isPinned).toBe(true)
+  })
+
+  it('unpins when the reader scrolls up mid-animation', () => {
+    const box = scrollBox({ smoothIsInstant: false })
+    const { result } = renderHook(() => useStickToBottom<HTMLDivElement>())
+    act(() => result.current.ref(box.el as HTMLDivElement))
+    act(() => box.scrollTo(0))
+
+    act(() => result.current.scrollToBottom('smooth'))
+    act(() => box.scrollTo(300))
+    // The reader takes over and goes the other way.
+    act(() => box.scrollTo(100))
+
+    expect(result.current.isPinned).toBe(false)
+  })
+
+  it('leaves the reader where they scrolled to', () => {
+    const box = scrollBox({ smoothIsInstant: false })
+    const child = document.createElement('div')
+    box.el.appendChild(child)
+    const { result } = renderHook(() => useStickToBottom<HTMLDivElement>())
+    act(() => result.current.ref(box.el as HTMLDivElement))
+
+    act(() => result.current.scrollToBottom('smooth'))
+    act(() => box.scrollTo(300))
+    act(() => box.scrollTo(100))
+
+    box.grow(500)
+    act(() => resize(child))
+
+    expect(box.scrollTop).toBe(100)
   })
 })
