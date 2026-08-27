@@ -35,6 +35,18 @@ describe('SSEParser', () => {
     expect(e).toEqual({ event: 'token', data: 'hi', id: '42', retry: 3000 })
   })
 
+  it('keeps an id that contains spaces', () => {
+    // Regression: the NUL check was written as a space check, so any id with a
+    // space in it was silently dropped. Found by reading eventsource-parser.
+    const p = new SSEParser()
+    expect(p.push('id: 42 abc\ndata: x\n\n')[0]!.id).toBe('42 abc')
+  })
+
+  it('ignores an id containing U+0000, per spec', () => {
+    const p = new SSEParser()
+    expect(p.push('id: 4\u00002\ndata: x\n\n')[0]!.id).toBeUndefined()
+  })
+
   it('ignores comment lines', () => {
     const p = new SSEParser()
     // Heartbeat comments keep proxies from closing an idle connection.
