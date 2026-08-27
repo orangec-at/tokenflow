@@ -1,5 +1,7 @@
 # tokenflow
 
+[![CI](https://github.com/orangec-at/tokenflow/actions/workflows/ci.yml/badge.svg)](https://github.com/orangec-at/tokenflow/actions/workflows/ci.yml)
+
 React hooks for streaming text UIs. Three small pieces that keep a token stream
 from turning into a render storm, a scroll fight, or a lost last sentence.
 
